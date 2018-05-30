@@ -97,7 +97,9 @@ model = PixelCNN(nr_resnet=args.nr_resnet, nr_filters=args.nr_filters,
             input_channels=input_channels, nr_logistic_mix=args.nr_logistic_mix)
 if cuda:
     model = model.cuda()
-
+if torch.cuda.device_count() > 1:
+    model = nn.DataParallel(model)
+    
 if args.load_params:
     load_part_of_model(model, args.load_params)
     # model.load_state_dict(torch.load(args.load_params))
