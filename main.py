@@ -170,7 +170,7 @@ for epoch in range(args.max_epochs):
     print('test loss : %s' % (test_loss / deno))
     
     if (epoch + 1) % args.save_interval == 0: 
-        torch.save(model.state_dict(), 'models/{}_{}.pth'.format(model_name, epoch))
+        torch.save(model.state_dict(), '{}/{}_{}.pth'.format(args.save_dir, model_name, epoch))
         print('sampling...')
         sample_t = sample(model)
         sample_t = rescaling_inv(sample_t)
