@@ -98,6 +98,7 @@ model = PixelCNN(nr_resnet=args.nr_resnet, nr_filters=args.nr_filters,
 if cuda:
     model = model.cuda()
 if torch.cuda.device_count() > 1:
+    print torch.cuda.device_count()
     model = nn.DataParallel(model)
     
 if args.load_params:
