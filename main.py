@@ -1,5 +1,6 @@
 import time
 import os
+import json
 import argparse
 import torch
 import torch.nn as nn
@@ -26,18 +27,20 @@ parser.add_argument('-o', '--save_dir', type=str, default='models',
                     help='Location for parameter checkpoints and samples')
 parser.add_argument('-d', '--dataset', type=str,
                     default='mnist', help='Can be either cifar|mnist')
-parser.add_argument('-p', '--print_every', type=int, default=50, # todo: 50 / debuggin 1
+parser.add_argument('-p', '--print_every', type=int, default=1, # todo: 50 / debuggin 1
                     help='how many iterations between print statements')
-parser.add_argument('-t', '--save_interval', type=int, default=10,
+parser.add_argument('-t', '--save_interval', type=int, default=1,
                     help='Every how many epochs to write checkpoint/samples?')
 parser.add_argument('-r', '--load_params', type=str, default=None,
                     help='Restore training from previous model checkpoint?')
+parser.add_argument('-z', '--resume', type=int, choices=[0, 1], default=0,
+                    help='Resume checkpoint')
 # model
-parser.add_argument('-q', '--nr_resnet', type=int, default=5, # todo: 5 / debuggin 1
+parser.add_argument('-q', '--nr_resnet', type=int, default=1, # todo: 5 / debuggin 1
                     help='Number of residual blocks per stage of the model')
-parser.add_argument('-n', '--nr_filters', type=int, default=160, # todo: 160 / debuggin 16
+parser.add_argument('-n', '--nr_filters', type=int, default=10, # todo: 160 / debuggin 16
                     help='Number of filters to use across the model. Higher = larger model.')
-parser.add_argument('-m', '--nr_logistic_mix', type=int, default=10, #todo : 10 / debuggin 2
+parser.add_argument('-m', '--nr_logistic_mix', type=int, default=2, #todo : 10 / debuggin 2
                     help='Number of logistic components in the mixture. Higher = more flexible model')
 parser.add_argument('-l', '--lr', type=float,
                     default=0.0002, help='Base learning rate')
@@ -50,13 +53,15 @@ parser.add_argument('-x', '--max_epochs', type=int,
 parser.add_argument('-s', '--seed', type=int, default=1,
                     help='Random seed to use')
 args = parser.parse_args()
+print json.dumps(vars(args), indent=4)
 
 # reproducibility
 torch.manual_seed(args.seed)
 np.random.seed(args.seed)
 
-model_name = 'pcnn_lr:{:.5f}_nr-resnet{}_nr-filters{}'.format(args.lr, args.nr_resnet, args.nr_filters)
-assert not os.path.exists(os.path.join('runs', model_name)), '{} already exists!'.format(model_name)
+model_name = 'pcnn_lr:{}_lr{:.5f}_rblocks{}_rfilters{}_sd{}_bs{}'.format(
+    args.dataset, args.lr, args.nr_resnet, args.nr_filters, args.seed, args.batch_size)
+#assert not os.path.exists(os.path.join('runs', model_name)), '{} already exists!'.format(model_name)
 writer = SummaryWriter(log_dir=os.path.join('runs', model_name))
 
 sample_batch_size = 25
@@ -101,13 +106,25 @@ if torch.cuda.device_count() > 1:
     print torch.cuda.device_count()
     model = nn.DataParallel(model)
     
+optimizer = optim.Adam(model.parameters(), lr=args.lr)
+scheduler = lr_scheduler.StepLR(optimizer, step_size=1, gamma=args.lr_decay)
+checkpoint_meta = {'epoch0':0}
+
+
 if args.load_params:
     load_part_of_model(model, args.load_params)
     # model.load_state_dict(torch.load(args.load_params))
     print('model parameters loaded')
 
-optimizer = optim.Adam(model.parameters(), lr=args.lr)
-scheduler = lr_scheduler.StepLR(optimizer, step_size=1, gamma=args.lr_decay)
+
+if args.resume:
+    print 'Model resuming'
+    model.load_state_dict(torch.load('{}/{}.mdl.pth'.format(args.save_dir, model_name)))
+    optimizer.load_state_dict(torch.save('{}/{}.optim.pth'.format(args.save_dir, model_name)))
+    checkpoint_meta.update(torch.save('{}/{}.ckpt.pth'.format(args.save_dir, model_name)))
+    print '::meta::'
+    print json.dumps(checkpoint_meta, indent=4)
+
 
 def sample(model):
     model.train(False)
@@ -124,7 +141,8 @@ def sample(model):
 
 print('starting training')
 writes = 0
-for epoch in range(args.max_epochs):
+count_train = 0.
+for epoch in range(checkpoint_meta['epoch0'], args.max_epochs):
     model.train(True)
     if cuda:
         torch.cuda.synchronize()
@@ -132,6 +150,7 @@ for epoch in range(args.max_epochs):
     time_ = time.time()
     model.train()
     for batch_idx, (input,_) in enumerate(train_loader):
+        count_train += input.size(0)
         if cuda:
             input = input.cuda(async=True)
         input = Variable(input)
@@ -141,25 +160,31 @@ for epoch in range(args.max_epochs):
         loss.backward()
         optimizer.step()
         train_loss += loss.data[0]
-        if (batch_idx +1) % args.print_every == 0 : 
-            deno = args.print_every * args.batch_size * np.prod(obs) * np.log(2.)
+        if (batch_idx + 1) % args.print_every == 0 : 
+            deno = count_train * np.prod(obs) * np.log(2.)
             writer.add_scalar('train/bpd', (train_loss / deno), writes)
             print('loss : {:.4f}, time : {:.4f}'.format(
                 (train_loss / deno), 
                 (time.time() - time_)))
             train_loss = 0.
             writes += 1
+            count_train = 0.
             time_ = time.time()
             
 
     # decrease learning rate
-    scheduler.step()
+    scheduler.step(epoch)
+    
+    # update checkpoint meta
+    checkpoint_meta['epoch0'] = epoch + 1
     
     if cuda:
         torch.cuda.synchronize()
     model.eval()
     test_loss = 0.
+    count_test = 0.
     for batch_idx, (input,_) in enumerate(test_loader):
+        count_test += input.size(0)
         if cuda:
             input = input.cuda(async=True)
         input_var = Variable(input)
@@ -168,14 +193,19 @@ for epoch in range(args.max_epochs):
         test_loss += loss.data[0]
         del loss, output
 
-    deno = batch_idx * args.batch_size * np.prod(obs) * np.log(2.)
+    deno = count_test * args.batch_size * np.prod(obs) * np.log(2.)
     writer.add_scalar('test/bpd', (test_loss / deno), writes)
     print('test loss : %s' % (test_loss / deno))
     
     if (epoch + 1) % args.save_interval == 0: 
-        torch.save(model.state_dict(), '{}/{}_{}.pth'.format(args.save_dir, model_name, epoch))
+        torch.save(model.state_dict(), '{}/{}.mdl.pth'.format(args.save_dir, model_name))
+        torch.save(optimizer.state_dict(),'{}/{}.optim.pth'.format(args.save_dir, model_name))
+        torch.save(checkpoint_meta,'{}/{}.ckpt.pth'.format(args.save_dir, model_name))
+        
         print('sampling...')
         sample_t = sample(model)
         sample_t = rescaling_inv(sample_t)
         utils.save_image(sample_t,'images/{}_{}.png'.format(model_name, epoch), 
                 nrow=5, padding=0)
+        
+        
