@@ -120,8 +120,8 @@ if args.load_params:
 if args.resume:
     print 'Model resuming'
     model.load_state_dict(torch.load('{}/{}.mdl.pth'.format(args.save_dir, model_name)))
-    optimizer.load_state_dict(torch.save('{}/{}.optim.pth'.format(args.save_dir, model_name)))
-    checkpoint_meta.update(torch.save('{}/{}.ckpt.pth'.format(args.save_dir, model_name)))
+    optimizer.load_state_dict(torch.load('{}/{}.optim.pth'.format(args.save_dir, model_name)))
+    checkpoint_meta.update(torch.load('{}/{}.ckpt.pth'.format(args.save_dir, model_name)))
     print '::meta::'
     print json.dumps(checkpoint_meta, indent=4)
 
